@@ -1,0 +1,13 @@
+project: mes_ai_trader
+registry: s3://mes-artifacts/features/registry.db
+provider: aws
+online_store:
+  type: dynamodb
+  region: us-east-1
+  table_name_template: mes_feast_online_{project}_{table_name}
+  default_ttl: 86400  # 24 hours
+offline_store:
+  type: file
+  file_format: parquet
+  file_url: s3://mes-artifacts/features/
+entity_key_serialization_version: 2 

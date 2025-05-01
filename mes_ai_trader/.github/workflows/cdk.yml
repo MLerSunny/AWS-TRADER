@@ -1,0 +1,78 @@
+name: CDK Synthesis Check
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+
+jobs:
+  cdk-synth:
+    name: CDK Synth
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: |
+          npm ci
+          
+      - name: Install AWS CDK 2
+        run: |
+          npm install -g aws-cdk@2
+          
+      - name: Run CDK Synth
+        run: |
+          cd infra/cdk
+          cdk synth
+        env:
+          # Add any environment variables needed for CDK
+          CDK_DEFAULT_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "CDK synthesis failed. Please check your CDK code for errors."
+          exit 1
+          
+  flink-build:
+    name: Build Flink OHLCV Job
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set up JDK 11
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          cache: 'sbt'
+          
+      - name: Build with SBT
+        working-directory: mes_ai_trader/pipelines/flink
+        run: |
+          sbt clean assembly
+          
+      - name: Rename JAR to ohlcv.jar
+        working-directory: mes_ai_trader/pipelines/flink
+        run: |
+          mkdir -p artifacts
+          find target/scala-2.12 -name "*.jar" -type f -exec cp {} artifacts/ohlcv.jar \;
+          
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ohlcv
+          path: mes_ai_trader/pipelines/flink/artifacts/ohlcv.jar
+          retention-days: 14 

@@ -1,0 +1,62 @@
+[default]
+# Database settings
+DB_HOST = "db"
+DB_PORT = 5432
+DB_NAME = "postgres"
+DB_USER = "postgres"
+DB_PASSWORD = "postgres"
+DB_MIN_CONNECTIONS = 1
+DB_MAX_CONNECTIONS = 10
+
+# AWS Settings
+AWS_REGION = "us-east-1"
+TRADOVATE_SECRETS_NAME = "mes-ai-trader/tradovate-credentials"
+TRADING_MODE_PARAM_PATH = "/mes-ai-trader/trading-mode"
+
+# API Settings
+API_CORS_ORIGINS = ["*"]
+API_AUTH_ENABLED = true
+API_KEY_HEADER = "X-API-Key"
+JWT_SECRET = ""  # Set in .secrets.toml
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_MINUTES = 60
+
+# Tradovate API Settings
+TRADOVATE_API_URL = "https://demo.tradovateapi.com/v1"
+MAX_RETRIES = 3
+DEFAULT_ATR = 2.5
+
+# Model Settings
+LGBM_MODEL_PATH = "../models/lgbm/model.lgb"
+TFT_MODEL_PATH = "../models/tft/model.pt"
+PPO_MODEL_PATH = "../models/ppo/ppo.zip"
+FEATURE_REPO_PATH = "../feature_repo"
+CACHE_TTL_SECONDS = 30
+MODEL_LOAD_RETRIES = 3
+
+# Monitoring
+ENABLE_METRICS = true
+METRICS_PORT = 9090
+ENABLE_TRACING = true
+JAEGER_AGENT_HOST = "jaeger"
+JAEGER_AGENT_PORT = 6831
+
+# Feature Store
+FEAST_REPO_PATH = "../feature_repo"
+
+# Circuit Breaker Settings
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
+CIRCUIT_BREAKER_RECOVERY_TIMEOUT = 30
+
+[development]
+API_AUTH_ENABLED = false
+ENABLE_TRACING = false
+
+[production]
+DB_MIN_CONNECTIONS = 5
+DB_MAX_CONNECTIONS = 20
+API_CORS_ORIGINS = ["https://mes-ai-trader.example.com"]
+CACHE_TTL_SECONDS = 15
+MODEL_LOAD_RETRIES = 5
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3
+CIRCUIT_BREAKER_RECOVERY_TIMEOUT = 60 

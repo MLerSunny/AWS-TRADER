@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: MES AI Trader Risk Gate Lambda
+
+Parameters:
+  EquityParamPath:
+    Type: String
+    Default: /mes-ai-trader/equity
+    Description: SSM Parameter path for storing account equity
+
+Resources:
+  RiskGateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: lambda.lambda_handler
+      Runtime: python3.9
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          EQUITY_PARAM_PATH: !Ref EquityParamPath
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref EquityParamPath
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /risk-gate
+            Method: post
+
+  EquityParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref EquityParamPath
+      Type: String
+      Value: '10000.0'
+      Description: Current account equity for MES AI Trader
+      Tier: Standard
+
+Outputs:
+  RiskGateFunction:
+    Description: Risk Gate Lambda Function ARN
+    Value: !GetAtt RiskGateFunction.Arn
+  
+  RiskGateApi:
+    Description: API Gateway endpoint URL for Risk Gate
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/risk-gate/" 

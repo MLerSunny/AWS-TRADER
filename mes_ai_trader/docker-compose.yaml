@@ -1,0 +1,189 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - mes_ai_network
+
+  dashboard:
+    build:
+      context: services/dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-postgres}
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - CLAUDE_MODEL_ID=${CLAUDE_MODEL_ID:-anthropic.claude-3-sonnet-20240229-v1:0}
+      - SHAP_STORE_PATH=/app/data/shap_values
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro  # Map AWS credentials for Bedrock
+      - ./models/lgbm/shap_values:/app/data/shap_values
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - mes_ai_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  order_router:
+    build:
+      context: services/order_router
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - TRADOVATE_API_URL=${TRADOVATE_API_URL:-https://demo.tradovateapi.com/v1}
+      - TRADOVATE_SECRETS_NAME=${TRADOVATE_SECRETS_NAME:-mes-ai-trader/tradovate-credentials}
+      - DEFAULT_ATR=${DEFAULT_ATR:-2.5}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro  # Map AWS credentials for Secrets Manager
+    env_file:
+      - .env
+    networks:
+      - mes_ai_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  inference:
+    build:
+      context: .
+      dockerfile: services/inference/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - FEAST_REPO_PATH=/app/feature_repo
+      - LGBM_MODEL_PATH=/app/models/lgbm/model.lgb
+      - TFT_MODEL_PATH=/app/models/tft/model.pt
+      - PPO_MODEL_PATH=/app/models/ppo/ppo.zip
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro  # Map AWS credentials for Feast to access S3/DynamoDB
+    networks:
+      - mes_ai_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db:
+    image: postgres:14-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    networks:
+      - mes_ai_network
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - mes_ai_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - db
+    networks:
+      - mes_ai_network
+
+  ingest:
+    build:
+      context: .
+      dockerfile: pipelines/tick_ingest/Dockerfile
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro  # Map AWS credentials
+    environment:
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - TRADOVATE_TOKEN=${TRADOVATE_TOKEN}
+      - KINESIS_STREAM_NAME=mes-raw-ticks
+      - BATCH_SIZE=500
+      - MAX_RECONNECT_ATTEMPTS=5
+      - RECONNECT_DELAY_SECONDS=5
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - mes_ai_network
+    depends_on:
+      - api
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  flink-jobmanager:
+    image: flink:1.16.1-scala_2.12-java11
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - ./pipelines/flink/target/scala-2.12:/opt/flink/usrlib
+      - ${HOME}/.aws:/root/.aws:ro
+    networks:
+      - mes_ai_network
+
+  flink-taskmanager:
+    image: flink:1.16.1-scala_2.12-java11
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - ./pipelines/flink/target/scala-2.12:/opt/flink/usrlib
+      - ${HOME}/.aws:/root/.aws:ro
+    networks:
+      - mes_ai_network
+
+volumes:
+  postgres_data:
+
+networks:
+  mes_ai_network:
+    driver: bridge 

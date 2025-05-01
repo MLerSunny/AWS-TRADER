@@ -1,0 +1,379 @@
+{
+  "Comment": "Nightly retraining workflow for MES AI Trader models at 01:00 UTC",
+  "StartAt": "Start Retraining Process",
+  "States": {
+    "Start Retraining Process": {
+      "Type": "Pass",
+      "Next": "Run Data Preprocessing"
+    },
+    "Run Data Preprocessing": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('P-11-data-preprocessing-{}', $$.Execution.StartTime)",
+        "ProcessingInputs": [
+          {
+            "InputName": "code",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/processing/code/",
+              "LocalPath": "/opt/ml/processing/input/code",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          }
+        ],
+        "ProcessingOutputConfig": {
+          "Outputs": [
+            {
+              "OutputName": "preprocessed-data",
+              "S3Output": {
+                "S3Uri": "s3://mes-ai-trader-artifacts/processing/preprocessed-data/",
+                "LocalPath": "/opt/ml/processing/output/data",
+                "S3UploadMode": "EndOfJob"
+              }
+            }
+          ]
+        },
+        "AppSpecification": {
+          "ImageUri": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-build:latest",
+          "ContainerEntrypoint": ["python", "/opt/ml/processing/input/code/P-11-data-preprocessing.py"]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": {
+            "InstanceCount": 1,
+            "InstanceType": "ml.m5.xlarge",
+            "VolumeSizeInGB": 30
+          }
+        },
+        "RoleArn": "{{SageMakerRoleArn}}"
+      },
+      "Next": "Run Feature Engineering"
+    },
+    "Run Feature Engineering": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('P-12-feature-engineering-{}', $$.Execution.StartTime)",
+        "ProcessingInputs": [
+          {
+            "InputName": "code",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/processing/code/",
+              "LocalPath": "/opt/ml/processing/input/code",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          },
+          {
+            "InputName": "preprocessed-data",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/processing/preprocessed-data/",
+              "LocalPath": "/opt/ml/processing/input/data",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          }
+        ],
+        "ProcessingOutputConfig": {
+          "Outputs": [
+            {
+              "OutputName": "features",
+              "S3Output": {
+                "S3Uri": "s3://mes-ai-trader-artifacts/processing/features/",
+                "LocalPath": "/opt/ml/processing/output/features",
+                "S3UploadMode": "EndOfJob"
+              }
+            }
+          ]
+        },
+        "AppSpecification": {
+          "ImageUri": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-build:latest",
+          "ContainerEntrypoint": ["python", "/opt/ml/processing/input/code/P-12-feature-engineering.py"]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": {
+            "InstanceCount": 1,
+            "InstanceType": "ml.m5.xlarge",
+            "VolumeSizeInGB": 30
+          }
+        },
+        "RoleArn": "{{SageMakerRoleArn}}"
+      },
+      "Next": "Run Model Training"
+    },
+    "Run Model Training": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('P-13-model-training-{}', $$.Execution.StartTime)",
+        "ProcessingInputs": [
+          {
+            "InputName": "code",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/processing/code/",
+              "LocalPath": "/opt/ml/processing/input/code",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          },
+          {
+            "InputName": "features",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/processing/features/",
+              "LocalPath": "/opt/ml/processing/input/features",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          }
+        ],
+        "ProcessingOutputConfig": {
+          "Outputs": [
+            {
+              "OutputName": "models",
+              "S3Output": {
+                "S3Uri": "s3://mes-ai-trader-artifacts/models/",
+                "LocalPath": "/opt/ml/processing/output/models",
+                "S3UploadMode": "EndOfJob"
+              }
+            },
+            {
+              "OutputName": "evaluation",
+              "S3Output": {
+                "S3Uri": "s3://mes-ai-trader-artifacts/evaluation/",
+                "LocalPath": "/opt/ml/processing/output/evaluation",
+                "S3UploadMode": "EndOfJob"
+              }
+            }
+          ]
+        },
+        "AppSpecification": {
+          "ImageUri": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-build:latest",
+          "ContainerEntrypoint": ["python", "/opt/ml/processing/input/code/P-13-model-training.py"]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": {
+            "InstanceCount": 1,
+            "InstanceType": "ml.m5.xlarge",
+            "VolumeSizeInGB": 30
+          }
+        },
+        "RoleArn": "{{SageMakerRoleArn}}"
+      },
+      "Next": "Register LGBM Model"
+    },
+    "Register LGBM Model": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createModelPackage",
+      "Parameters": {
+        "ModelPackageGroupName": "MESTraderModelPackageGroup",
+        "ModelPackageDescription": "LGBM model for MES AI Trader",
+        "ModelApprovalStatus": "PendingManualApproval",
+        "InferenceSpecification": {
+          "Containers": [
+            {
+              "Image": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-inference:latest",
+              "ModelDataUrl.$": "States.Format('s3://mes-ai-trader-artifacts/models/lgbm/{}', $$.Execution.StartTime)"
+            }
+          ],
+          "SupportedContentTypes": ["application/json"],
+          "SupportedResponseMIMETypes": ["application/json"]
+        },
+        "ValidationSpecification": {
+          "ValidationRole": "{{SageMakerRoleArn}}",
+          "ValidationProfiles": [
+            {
+              "ProfileName": "validation-profile",
+              "TransformJobDefinition": {
+                "TransformInput": {
+                  "DataSource": {
+                    "S3DataSource": {
+                      "S3DataType": "S3Prefix",
+                      "S3Uri": "s3://mes-ai-trader-artifacts/validation-data/"
+                    }
+                  },
+                  "ContentType": "application/json"
+                },
+                "TransformOutput": {
+                  "S3OutputPath": "s3://mes-ai-trader-artifacts/validation-output/"
+                },
+                "TransformResources": {
+                  "InstanceType": "ml.m5.large",
+                  "InstanceCount": 1
+                }
+              }
+            }
+          ]
+        },
+        "ModelMetrics": {
+          "ModelQuality": {
+            "Statistics": {
+              "S3Uri.$": "States.Format('s3://mes-ai-trader-artifacts/evaluation/lgbm-metrics-{}.json', $$.Execution.StartTime)"
+            }
+          }
+        },
+        "ModelPackageStatusDetails": {
+          "ValidationStatuses": [
+            {
+              "Name": "NightlyRetraining",
+              "Status": "Completed"
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "ModelType",
+            "Value": "LGBM"
+          }
+        ]
+      },
+      "Next": "Register TFT Model"
+    },
+    "Register TFT Model": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createModelPackage",
+      "Parameters": {
+        "ModelPackageGroupName": "MESTraderModelPackageGroup",
+        "ModelPackageDescription": "TFT model for MES AI Trader",
+        "ModelApprovalStatus": "PendingManualApproval",
+        "InferenceSpecification": {
+          "Containers": [
+            {
+              "Image": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-inference:latest",
+              "ModelDataUrl.$": "States.Format('s3://mes-ai-trader-artifacts/models/tft/{}', $$.Execution.StartTime)"
+            }
+          ],
+          "SupportedContentTypes": ["application/json"],
+          "SupportedResponseMIMETypes": ["application/json"]
+        },
+        "ValidationSpecification": {
+          "ValidationRole": "{{SageMakerRoleArn}}",
+          "ValidationProfiles": [
+            {
+              "ProfileName": "validation-profile",
+              "TransformJobDefinition": {
+                "TransformInput": {
+                  "DataSource": {
+                    "S3DataSource": {
+                      "S3DataType": "S3Prefix",
+                      "S3Uri": "s3://mes-ai-trader-artifacts/validation-data/"
+                    }
+                  },
+                  "ContentType": "application/json"
+                },
+                "TransformOutput": {
+                  "S3OutputPath": "s3://mes-ai-trader-artifacts/validation-output/"
+                },
+                "TransformResources": {
+                  "InstanceType": "ml.m5.large",
+                  "InstanceCount": 1
+                }
+              }
+            }
+          ]
+        },
+        "ModelMetrics": {
+          "ModelQuality": {
+            "Statistics": {
+              "S3Uri.$": "States.Format('s3://mes-ai-trader-artifacts/evaluation/tft-metrics-{}.json', $$.Execution.StartTime)"
+            }
+          }
+        },
+        "ModelPackageStatusDetails": {
+          "ValidationStatuses": [
+            {
+              "Name": "NightlyRetraining",
+              "Status": "Completed"
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "ModelType",
+            "Value": "TFT"
+          }
+        ]
+      },
+      "Next": "Register PPO Model"
+    },
+    "Register PPO Model": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createModelPackage",
+      "Parameters": {
+        "ModelPackageGroupName": "MESTraderModelPackageGroup",
+        "ModelPackageDescription": "PPO model for MES AI Trader",
+        "ModelApprovalStatus": "PendingManualApproval",
+        "InferenceSpecification": {
+          "Containers": [
+            {
+              "Image": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-inference:latest",
+              "ModelDataUrl.$": "States.Format('s3://mes-ai-trader-artifacts/models/ppo/{}', $$.Execution.StartTime)"
+            }
+          ],
+          "SupportedContentTypes": ["application/json"],
+          "SupportedResponseMIMETypes": ["application/json"]
+        },
+        "ValidationSpecification": {
+          "ValidationRole": "{{SageMakerRoleArn}}",
+          "ValidationProfiles": [
+            {
+              "ProfileName": "validation-profile",
+              "TransformJobDefinition": {
+                "TransformInput": {
+                  "DataSource": {
+                    "S3DataSource": {
+                      "S3DataType": "S3Prefix",
+                      "S3Uri": "s3://mes-ai-trader-artifacts/validation-data/"
+                    }
+                  },
+                  "ContentType": "application/json"
+                },
+                "TransformOutput": {
+                  "S3OutputPath": "s3://mes-ai-trader-artifacts/validation-output/"
+                },
+                "TransformResources": {
+                  "InstanceType": "ml.m5.large",
+                  "InstanceCount": 1
+                }
+              }
+            }
+          ]
+        },
+        "ModelMetrics": {
+          "ModelQuality": {
+            "Statistics": {
+              "S3Uri.$": "States.Format('s3://mes-ai-trader-artifacts/evaluation/ppo-metrics-{}.json', $$.Execution.StartTime)"
+            }
+          }
+        },
+        "ModelPackageStatusDetails": {
+          "ValidationStatuses": [
+            {
+              "Name": "NightlyRetraining",
+              "Status": "Completed"
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "ModelType",
+            "Value": "PPO"
+          }
+        ]
+      },
+      "Next": "Update Model Approval Status"
+    },
+    "Update Model Approval Status": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "UpdateModelApprovalStatus",
+        "Payload": {
+          "ExecutionId.$": "$$.Execution.Id",
+          "Status": "Approved",
+          "ModelPackageGroupName": "MESTraderModelPackageGroup"
+        }
+      },
+      "End": true
+    }
+  }
+} 
