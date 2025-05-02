@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Margin Feed Lambda function for CME API margin data retrieval'
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: S3 bucket for storing margin data
+    Default: 'mes-ai-trader-feature-store'
+
+  CmeApiKey:
+    Type: String
+    Description: API key for CME SPAN margin API (optional)
+    Default: ''
+    NoEcho: true
+
+  SymbolsList:
+    Type: String
+    Description: Comma-separated list of symbols to fetch margin data for
+    Default: 'MES'
+
+  FeatureStoreBucket:
+    Type: String
+    Description: S3 bucket containing the Feature Store data
+    Default: 'mes-ai-trader-feature-store'
+
+Resources:
+  # Policy for Lambda to access S3, CloudWatch Logs, and Feast Feature Store
+  MarginFeedLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MarginFeedPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+                  - !Sub 'arn:aws:s3:::${FeatureStoreBucket}'
+                  - !Sub 'arn:aws:s3:::${FeatureStoreBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:BatchWriteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:BatchGetItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:Scan'
+                Resource: 
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/feast-*'
+
+  # Lambda function for margin data retrieval
+  MarginFeedLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: mes-trader-margin-feed
+      CodeUri: ./
+      Handler: lambda.lambda_handler
+      Runtime: python3.9
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt MarginFeedLambdaRole.Arn
+      Environment:
+        Variables:
+          PRICING_API_URL: 'https://api.cmegroup.com/pricinginformation/v1/margins'
+          PRICING_API_KEY: !Ref CmeApiKey
+          S3_BUCKET: !Ref S3BucketName
+          S3_PREFIX: 'margin-data'
+          SYMBOLS: !Ref SymbolsList
+          FEATURE_STORE_REPO_PATH: '/opt/ml/processing/feature_repo'
+      Layers:
+        - !Ref PythonLibsLayer
+
+  # Layer for required Python dependencies
+  PythonLibsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: margin-feed-python-libs
+      Description: Layer with pandas, numpy, requests, and feast
+      ContentUri: ./layer/
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Retain
+
+  # EventBridge rule to trigger the Lambda every 60 minutes
+  HourlyMarginFeedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: MESTraderHourlyMarginFeed
+      Description: 'Trigger the margin feed Lambda every 60 minutes'
+      ScheduleExpression: 'rate(60 minutes)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MarginFeedLambda.Arn
+          Id: MarginFeedLambdaTarget
+
+  # Permission for EventBridge to invoke the Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MarginFeedLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt HourlyMarginFeedRule.Arn
+
+  # Feature Store offline pipeline update
+  FeatureStoreOfflineTask:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: MESTraderMarginOfflineUpdate
+      DefinitionString: !Sub |
+        {
+          "Comment": "Pipeline for rebuilding margin data parquet files nightly",
+          "StartAt": "RunMarginOfflineUpdate",
+          "States": {
+            "RunMarginOfflineUpdate": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+              "Parameters": {
+                "ProcessingJobName.$": "States.Format('margin-offline-update-{}', $$.Execution.StartTime)",
+                "ProcessingInputs": [
+                  {
+                    "InputName": "code",
+                    "S3Input": {
+                      "S3Uri": "s3://${S3BucketName}/processing/code/",
+                      "LocalPath": "/opt/ml/processing/input/code",
+                      "S3DataType": "S3Prefix",
+                      "S3InputMode": "File"
+                    }
+                  },
+                  {
+                    "InputName": "margin-data",
+                    "S3Input": {
+                      "S3Uri": "s3://${S3BucketName}/margin-data/",
+                      "LocalPath": "/opt/ml/processing/input/margin-data",
+                      "S3DataType": "S3Prefix",
+                      "S3InputMode": "File"
+                    }
+                  }
+                ],
+                "ProcessingOutputConfig": {
+                  "Outputs": [
+                    {
+                      "OutputName": "margin-features",
+                      "S3Output": {
+                        "S3Uri": "s3://${FeatureStoreBucket}/feature_store/margin_features/",
+                        "LocalPath": "/opt/ml/processing/output/margin-features",
+                        "S3UploadMode": "EndOfJob"
+                      }
+                    }
+                  ]
+                },
+                "AppSpecification": {
+                  "ImageUri": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mes-trader-build:latest",
+                  "ContainerEntrypoint": ["python", "/opt/ml/processing/input/code/process_margin_data.py"]
+                },
+                "ProcessingResources": {
+                  "ClusterConfig": {
+                    "InstanceCount": 1,
+                    "InstanceType": "ml.m5.large",
+                    "VolumeSizeInGB": 10
+                  }
+                },
+                "RoleArn": "${SageMakerRoleArn}"
+              },
+              "End": true
+            }
+          }
+        }
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/StepFunctionsRole
+
+  # EventBridge rule to trigger the offline pipeline nightly
+  NightlyMarginUpdateRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: MESTraderNightlyMarginUpdate
+      Description: 'Trigger the margin feature store offline pipeline nightly'
+      ScheduleExpression: 'cron(0 0 * * ? *)'  # Run at midnight UTC every day
+      State: ENABLED
+      Targets:
+        - Arn: !Ref FeatureStoreOfflineTask
+          Id: MarginOfflineTarget
+          RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/EventBridgeToStepFunctionsRole
+
+Outputs:
+  MarginFeedLambda:
+    Description: "Margin Feed Lambda Function ARN"
+    Value: !GetAtt MarginFeedLambda.Arn
+
+  HourlyRuleArn:
+    Description: "Hourly EventBridge Rule ARN"
+    Value: !GetAtt HourlyMarginFeedRule.Arn
+
+  OfflinePipelineArn:
+    Description: "Margin Feature Store Offline Pipeline ARN"
+    Value: !Ref FeatureStoreOfflineTask 

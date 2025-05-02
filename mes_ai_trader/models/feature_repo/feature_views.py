@@ -1,127 +1,160 @@
 from datetime import timedelta
 
 from feast import (
-    Feature,
-    FeatureView,
-    FileSource,
-    ValueType,
+    Entity, Feature, FeatureView, 
+    FileSource, S3Source, ValueType,
+)
+from feast.types import Float32, String
+
+# Define entities
+market = Entity(
+    name="market_id",
+    description="Market identifier",
+    value_type=ValueType.STRING,
+    join_keys=["market_id"],
 )
 
-from entities import market
+symbol = Entity(
+    name="symbol",
+    description="Trading symbol identifier",
+    value_type=ValueType.STRING,
+    join_keys=["symbol"],
+)
 
-# Define sources for each feature set (offline store)
+account = Entity(
+    name="account_id", 
+    description="Trading account identifier",
+    value_type=ValueType.STRING,
+    join_keys=["account_id"],
+)
 
-# Source for RSI-14 data
+# Feature views for technical indicators
 rsi_source = FileSource(
-    path="s3://mes-artifacts/features/rsi_features.parquet",
+    path="sample_data/rsi_features.parquet",
     event_timestamp_column="event_timestamp",
     created_timestamp_column="created_timestamp",
 )
 
-# Source for ATR-14 data
-atr_source = FileSource(
-    path="s3://mes-artifacts/features/atr_features.parquet",
-    event_timestamp_column="event_timestamp",
-    created_timestamp_column="created_timestamp",
-)
-
-# Source for VWAP data
-vwap_source = FileSource(
-    path="s3://mes-artifacts/features/vwap_features.parquet",
-    event_timestamp_column="event_timestamp",
-    created_timestamp_column="created_timestamp",
-)
-
-# Source for order book imbalance data
-ob_imbalance_source = FileSource(
-    path="s3://mes-artifacts/features/ob_imbalance_features.parquet",
-    event_timestamp_column="event_timestamp",
-    created_timestamp_column="created_timestamp",
-)
-
-# Source for margin data
-margin_source = FileSource(
-    path="s3://mes-artifacts/features/margin_features.parquet",
-    event_timestamp_column="event_timestamp",
-    created_timestamp_column="created_timestamp",
-)
-
-# Define feature views
-
-# RSI-14 Feature View
 rsi_view = FeatureView(
     name="rsi_features",
     entities=[market],
-    ttl=timedelta(days=1),
+    ttl=timedelta(days=3),
     schema=[
-        Feature(name="rsi_14", dtype=ValueType.FLOAT),
-        Feature(name="rsi_14_trend", dtype=ValueType.INT32),  # 1 for uptrend, -1 for downtrend, 0 for neutral
-        Feature(name="rsi_14_overbought", dtype=ValueType.BOOL),  # True if RSI > 70
-        Feature(name="rsi_14_oversold", dtype=ValueType.BOOL),  # True if RSI < 30
+        Feature(name="rsi_14", dtype=Float32),
+        Feature(name="rsi_14_trend", dtype=Float32),
+        Feature(name="rsi_14_overbought", dtype=Float32),
+        Feature(name="rsi_14_oversold", dtype=Float32),
     ],
     online=True,
     source=rsi_source,
-    tags={"team": "trading", "category": "momentum"},
+    tags={"category": "technical_indicators"},
 )
 
-# ATR-14 Feature View
+atr_source = FileSource(
+    path="sample_data/atr_features.parquet",
+    event_timestamp_column="event_timestamp",
+    created_timestamp_column="created_timestamp",
+)
+
 atr_view = FeatureView(
     name="atr_features",
     entities=[market],
-    ttl=timedelta(days=1),
+    ttl=timedelta(days=3),
     schema=[
-        Feature(name="atr_14", dtype=ValueType.FLOAT),
-        Feature(name="atr_14_normalized", dtype=ValueType.FLOAT),  # ATR as percentage of price
-        Feature(name="atr_14_percentile", dtype=ValueType.FLOAT),  # Percentile rank of current ATR vs historical
+        Feature(name="atr_14", dtype=Float32),
+        Feature(name="atr_14_normalized", dtype=Float32),
+        Feature(name="atr_14_percentile", dtype=Float32),
     ],
     online=True,
     source=atr_source,
-    tags={"team": "trading", "category": "volatility"},
+    tags={"category": "technical_indicators"},
 )
 
-# VWAP Feature View
+vwap_source = FileSource(
+    path="sample_data/vwap_features.parquet",
+    event_timestamp_column="event_timestamp",
+    created_timestamp_column="created_timestamp",
+)
+
 vwap_view = FeatureView(
     name="vwap_features",
     entities=[market],
-    ttl=timedelta(days=1),
+    ttl=timedelta(days=3),
     schema=[
-        Feature(name="vwap", dtype=ValueType.FLOAT),
-        Feature(name="price_to_vwap", dtype=ValueType.FLOAT),  # Current price / VWAP
-        Feature(name="vwap_trend", dtype=ValueType.INT32),  # 1 for uptrend, -1 for downtrend, 0 for neutral
+        Feature(name="vwap", dtype=Float32),
+        Feature(name="price_to_vwap", dtype=Float32),
+        Feature(name="vwap_trend", dtype=Float32),
     ],
     online=True,
     source=vwap_source,
-    tags={"team": "trading", "category": "price"},
+    tags={"category": "technical_indicators"},
 )
 
-# Order Book Imbalance Feature View
-ob_imbalance_view = FeatureView(
+order_book_source = FileSource(
+    path="sample_data/ob_imbalance_features.parquet",
+    event_timestamp_column="event_timestamp",
+    created_timestamp_column="created_timestamp",
+)
+
+order_book_view = FeatureView(
     name="order_book_features",
     entities=[market],
-    ttl=timedelta(days=1),
+    ttl=timedelta(days=3),
     schema=[
-        Feature(name="imbalance", dtype=ValueType.FLOAT),  # Range [-1, 1] where +1 is 100% bid pressure
-        Feature(name="bid_volume", dtype=ValueType.FLOAT),
-        Feature(name="ask_volume", dtype=ValueType.FLOAT),
-        Feature(name="imbalance_ma", dtype=ValueType.FLOAT),  # Moving average of imbalance
+        Feature(name="bid_volume", dtype=Float32),
+        Feature(name="ask_volume", dtype=Float32),
+        Feature(name="imbalance", dtype=Float32),
+        Feature(name="imbalance_ma", dtype=Float32),
     ],
     online=True,
-    source=ob_imbalance_source,
-    tags={"team": "trading", "category": "orderflow"},
+    source=order_book_source,
+    tags={"category": "market_microstructure"},
 )
 
-# Margin Feature View
+# Feature view for margin data - using S3 source for hourly updates
+margin_source = S3Source(
+    bucket="mes-ai-trader-feature-store",
+    path="feature_store/margin_features/",
+    event_timestamp_column="event_timestamp",
+    created_timestamp_column="created_timestamp"
+)
+
 margin_view = FeatureView(
     name="margin_features",
-    entities=[market],
-    ttl=timedelta(days=1),
+    entities=[symbol],
+    ttl=timedelta(days=30),  # Margin requirements change infrequently
     schema=[
-        Feature(name="initial_margin", dtype=ValueType.FLOAT),
-        Feature(name="maintenance_margin", dtype=ValueType.FLOAT),
-        Feature(name="margin_change_1d", dtype=ValueType.FLOAT),  # 1-day change in margin requirements
-        Feature(name="margin_to_price_ratio", dtype=ValueType.FLOAT),  # Margin as % of contract value
+        Feature(name="initial_margin", dtype=Float32),
+        Feature(name="maintenance_margin", dtype=Float32),
+        Feature(name="settlement_price", dtype=Float32),
+        Feature(name="effective_date", dtype=String),
+        Feature(name="margin_ratio", dtype=Float32),
+        Feature(name="margin_to_price_ratio", dtype=Float32),
+        Feature(name="source", dtype=String),
     ],
     online=True,
     source=margin_source,
-    tags={"team": "trading", "category": "risk"},
+    tags={"category": "risk_parameters"},
+    description="Margin requirements from CME or broker API",
+)
+
+# Feature view for account data
+account_source = FileSource(
+    path="sample_data/account_features.parquet",
+    event_timestamp_column="event_timestamp",
+)
+
+account_view = FeatureView(
+    name="account_features",
+    entities=[account],
+    ttl=timedelta(days=1),
+    schema=[
+        Feature(name="equity", dtype=Float32),
+        Feature(name="margin_used", dtype=Float32),
+        Feature(name="leverage", dtype=Float32),
+        Feature(name="risk_limit_pct", dtype=Float32),
+    ],
+    online=True,
+    source=account_source,
+    tags={"category": "account"},
 ) 
