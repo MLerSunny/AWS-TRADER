@@ -293,85 +293,119 @@
           }
         ]
       },
-      "Next": "Register PPO Model"
+      "Next": "Run Model Drift Detection"
     },
-    "Register PPO Model": {
+    "Run Model Drift Detection": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::sagemaker:createModelPackage",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
       "Parameters": {
-        "ModelPackageGroupName": "MESTraderModelPackageGroup",
-        "ModelPackageDescription": "PPO model for MES AI Trader",
-        "ModelApprovalStatus": "PendingManualApproval",
-        "InferenceSpecification": {
-          "Containers": [
-            {
-              "Image": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-inference:latest",
-              "ModelDataUrl.$": "States.Format('s3://mes-ai-trader-artifacts/models/ppo/{}', $$.Execution.StartTime)"
+        "ProcessingJobName.$": "States.Format('P-21-drift-detection-{}', $$.Execution.StartTime)",
+        "ProcessingInputs": [
+          {
+            "InputName": "code",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/processing/code/",
+              "LocalPath": "/opt/ml/processing/input/code",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
             }
-          ],
-          "SupportedContentTypes": ["application/json"],
-          "SupportedResponseMIMETypes": ["application/json"]
-        },
-        "ValidationSpecification": {
-          "ValidationRole": "{{SageMakerRoleArn}}",
-          "ValidationProfiles": [
+          },
+          {
+            "InputName": "evaluation",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/evaluation/",
+              "LocalPath": "/opt/ml/processing/input/evaluation",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          },
+          {
+            "InputName": "historical-data",
+            "S3Input": {
+              "S3Uri": "s3://mes-ai-trader-artifacts/historical-data/",
+              "LocalPath": "/opt/ml/processing/input/historical-data",
+              "S3DataType": "S3Prefix",
+              "S3InputMode": "File"
+            }
+          }
+        ],
+        "ProcessingOutputConfig": {
+          "Outputs": [
             {
-              "ProfileName": "validation-profile",
-              "TransformJobDefinition": {
-                "TransformInput": {
-                  "DataSource": {
-                    "S3DataSource": {
-                      "S3DataType": "S3Prefix",
-                      "S3Uri": "s3://mes-ai-trader-artifacts/validation-data/"
-                    }
-                  },
-                  "ContentType": "application/json"
-                },
-                "TransformOutput": {
-                  "S3OutputPath": "s3://mes-ai-trader-artifacts/validation-output/"
-                },
-                "TransformResources": {
-                  "InstanceType": "ml.m5.large",
-                  "InstanceCount": 1
-                }
+              "OutputName": "drift-metrics",
+              "S3Output": {
+                "S3Uri": "s3://mes-ai-trader-artifacts/drift-detection/",
+                "LocalPath": "/opt/ml/processing/output/drift-metrics",
+                "S3UploadMode": "EndOfJob"
               }
             }
           ]
         },
-        "ModelMetrics": {
-          "ModelQuality": {
-            "Statistics": {
-              "S3Uri.$": "States.Format('s3://mes-ai-trader-artifacts/evaluation/ppo-metrics-{}.json', $$.Execution.StartTime)"
-            }
+        "AppSpecification": {
+          "ImageUri": "{{account}}.dkr.ecr.{{region}}.amazonaws.com/mes-trader-build:latest",
+          "ContainerEntrypoint": ["python", "/opt/ml/processing/input/code/P-21-drift-detection.py"]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": {
+            "InstanceCount": 1,
+            "InstanceType": "ml.m5.xlarge",
+            "VolumeSizeInGB": 30
           }
         },
-        "ModelPackageStatusDetails": {
-          "ValidationStatuses": [
-            {
-              "Name": "NightlyRetraining",
-              "Status": "Completed"
-            }
-          ]
-        },
-        "Tags": [
-          {
-            "Key": "ModelType",
-            "Value": "PPO"
-          }
-        ]
+        "RoleArn": "{{SageMakerRoleArn}}"
       },
-      "Next": "Update Model Approval Status"
+      "Next": "Check Model Drift"
     },
-    "Update Model Approval Status": {
+    "Check Model Drift": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.DriftDetected",
+          "BooleanEquals": true,
+          "Next": "Alert on Model Drift"
+        }
+      ],
+      "Default": "No Drift Detected"
+    },
+    "Alert on Model Drift": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "{{ModelDriftSNSTopicArn}}",
+        "Message": {
+          "default.$": "States.Format('Model drift detected on {} with drift score: {}', $$.Execution.StartTime, $.DriftScore)"
+        },
+        "Subject": "MES AI Trader - Model Drift Alert"
+      },
+      "Next": "Submit Model for Review"
+    },
+    "Submit Model for Review": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "UpdateModelApprovalStatus",
+        "FunctionName": "{{SubmitModelForReviewFunctionArn}}",
         "Payload": {
-          "ExecutionId.$": "$$.Execution.Id",
-          "Status": "Approved",
-          "ModelPackageGroupName": "MESTraderModelPackageGroup"
+          "executionTime.$": "$$.Execution.StartTime",
+          "driftScore.$": "$.DriftScore",
+          "lgbmMetricsUri.$": "States.Format('s3://mes-ai-trader-artifacts/evaluation/lgbm-metrics-{}.json', $$.Execution.StartTime)",
+          "tftMetricsUri.$": "States.Format('s3://mes-ai-trader-artifacts/evaluation/tft-metrics-{}.json', $$.Execution.StartTime)",
+          "driftUri.$": "States.Format('s3://mes-ai-trader-artifacts/drift-detection/drift-metrics-{}.json', $$.Execution.StartTime)"
         }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    },
+    "No Drift Detected": {
+      "Type": "Pass",
+      "Result": {
+        "message": "No model drift detected, continuing with current model."
       },
       "End": true
     }

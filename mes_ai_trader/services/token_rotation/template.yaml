@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Tradovate Token Rotation Lambda for AWS Secrets Manager integration'
+
+Parameters:
+  SecretName:
+    Type: String
+    Description: Name of the secret containing Tradovate credentials
+    Default: "mes-ai-trader/tradovate-credentials"
+  
+  RotationSchedule:
+    Type: String
+    Description: Schedule expression for token rotation (UTC)
+    Default: "cron(0 */12 * * ? *)"  # Every 12 hours
+
+Resources:
+  TokenRotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tradovate-token-rotation
+      Handler: lambda.lambda_handler
+      Runtime: python3.9
+      CodeUri: ./
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          TRADOVATE_AUTH_URL: "https://demo.tradovateapi.com/v1/auth/accessTokenRequest"
+          SECRET_ARN: !Ref TradovateSecret
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:DescribeSecret
+                - secretsmanager:GetSecretValue
+                - secretsmanager:PutSecretValue
+                - secretsmanager:UpdateSecretVersionStage
+              Resource: !Ref TradovateSecret
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetRandomPassword
+              Resource: "*"
+      Events:
+        RotationTrigger:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.secretsmanager
+              detail-type:
+                - Secrets Manager Rotation Started
+              detail:
+                SecretId:
+                  - !Ref TradovateSecret
+
+  RotationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TokenRotationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: secretsmanager.amazonaws.com
+
+  TradovateSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Ref SecretName
+      Description: Tradovate API credentials and token
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"PLACEHOLDER","password":"PLACEHOLDER","token":"PLACEHOLDER"}'
+        GenerateStringKey: dummy
+        ExcludeCharacters: '"@/\\'
+      RotationRules:
+        AutomaticallyAfterDays: 1  # Set to 1 to ensure token is rotated frequently
+
+  SecretRotationSchedule:
+    Type: AWS::SecretsManager::RotationSchedule
+    Properties:
+      SecretId: !Ref TradovateSecret
+      RotationLambdaARN: !GetAtt TokenRotationFunction.Arn
+      RotationRules:
+        ScheduleExpression: !Ref RotationSchedule
+    DependsOn: RotationLambdaPermission
+
+Outputs:
+  TokenRotationFunction:
+    Description: "Tradovate Token Rotation Lambda Function"
+    Value: !GetAtt TokenRotationFunction.Arn
+
+  TradovateSecret:
+    Description: "ARN of the Tradovate credentials secret"
+    Value: !Ref TradovateSecret 

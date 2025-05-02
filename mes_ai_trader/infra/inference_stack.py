@@ -73,13 +73,44 @@ class InferenceStack(Stack):
             file="services/inference/Dockerfile",
         )
 
-        # Create IAM role for SageMaker with required permissions
+        # Create IAM role for SageMaker with least privilege permissions
         sagemaker_role = iam.Role(
             self, "SageMakerExecutionRole",
             assumed_by=iam.ServicePrincipal("sagemaker.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSageMakerFullAccess"),
-            ],
+        )
+
+        # Add specific permissions instead of using managed policy
+        sagemaker_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    # SageMaker model permissions
+                    "sagemaker:CreateModel",
+                    "sagemaker:DeleteModel",
+                    "sagemaker:DescribeModel",
+                    "sagemaker:ListModels",
+                    # SageMaker endpoint permissions
+                    "sagemaker:CreateEndpoint",
+                    "sagemaker:CreateEndpointConfig",
+                    "sagemaker:DeleteEndpoint",
+                    "sagemaker:DeleteEndpointConfig",
+                    "sagemaker:DescribeEndpoint",
+                    "sagemaker:DescribeEndpointConfig",
+                    "sagemaker:InvokeEndpoint",
+                    "sagemaker:ListEndpoints",
+                    "sagemaker:ListEndpointConfigs",
+                    "sagemaker:UpdateEndpoint",
+                    # CloudWatch Logs permissions
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams",
+                    # ECR permissions
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:BatchCheckLayerAvailability",
+                ],
+                resources=["*"],  # Can be further restricted to specific ARNs
+            )
         )
 
         # Add DynamoDB read permissions for Feast

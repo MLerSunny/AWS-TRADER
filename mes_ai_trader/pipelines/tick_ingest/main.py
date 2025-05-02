@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 import time
+import random
 from typing import Dict, List, Optional
 
 import boto3
@@ -35,6 +36,7 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "500"))
 MAX_RECONNECT_ATTEMPTS = int(os.environ.get("MAX_RECONNECT_ATTEMPTS", "5"))
 RECONNECT_DELAY_SECONDS = int(os.environ.get("RECONNECT_DELAY_SECONDS", "5"))
+JITTER_MAX_SECONDS = float(os.environ.get("JITTER_MAX_SECONDS", "1.0"))  # Maximum jitter in seconds
 
 # Initialize AWS Kinesis client
 kinesis_client = boto3.client("kinesis", region_name=AWS_REGION)
@@ -190,8 +192,13 @@ async def websocket_client():
                 await send_to_kinesis(batch)
                 batch = []
                 
-            # Wait before reconnecting
-            await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+            # Add jitter to reconnect delay to prevent thundering herd
+            jitter = random.uniform(0, JITTER_MAX_SECONDS)
+            backoff_delay = RECONNECT_DELAY_SECONDS * (2 ** (reconnect_attempts - 1))  # Exponential backoff
+            total_delay = backoff_delay + jitter
+            
+            logger.info(f"Waiting {total_delay:.2f}s before reconnecting (base: {backoff_delay}s, jitter: {jitter:.2f}s)")
+            await asyncio.sleep(total_delay)
             
     logger.critical(f"Failed to connect after {MAX_RECONNECT_ATTEMPTS} attempts")
     # Send any final ticks in the batch before exiting

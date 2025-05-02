@@ -4,7 +4,9 @@ CDK Stack for nightly retraining of ML models
 This stack creates:
 1. Step Functions workflow for model retraining
 2. EventBridge rule to trigger retraining at 01:00 UTC
-3. IAM roles for execution
+3. EventBridge rule to monitor for model drift
+4. SNS topic for model drift notifications
+5. IAM roles for execution
 """
 
 import os
@@ -17,6 +19,8 @@ from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lambda_,
     aws_sagemaker as sagemaker,
+    aws_sns as sns,
+    aws_sns_subscriptions as sns_subs,
     CfnOutput,
     Duration,
 )
@@ -54,6 +58,40 @@ class NightlyRetrainStack(Stack):
             )
         )
         
+        # Create SNS topic for model drift alerts
+        model_drift_topic = sns.Topic(
+            self, "ModelDriftTopic",
+            topic_name="mes-ai-trader-model-drift-alerts",
+            display_name="MES AI Trader Model Drift Alerts"
+        )
+        
+        # Create Lambda for submitting model for review upon drift detection
+        submit_model_for_review_lambda = lambda_.Function(
+            self, "SubmitModelForReviewLambda",
+            function_name="SubmitModelForReview",
+            runtime=lambda_.Runtime.PYTHON_3_9,
+            code=lambda_.Code.from_asset("mes_ai_trader/models"),
+            handler="register_model.submit_for_review",
+            timeout=Duration.minutes(5),
+            environment={
+                "MODEL_PACKAGE_GROUP_NAME": "MESTraderModelPackageGroup",
+                "NOTIFICATION_TOPIC_ARN": model_drift_topic.topic_arn
+            }
+        )
+        
+        # Grant permissions to the Lambda
+        submit_model_for_review_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "sagemaker:UpdateModelPackage",
+                    "sagemaker:DescribeModelPackage",
+                    "s3:GetObject",
+                    "sns:Publish"
+                ],
+                resources=["*"]
+            )
+        )
+        
         # Create Lambda for updating model approval status
         update_model_approval_lambda = lambda_.Function(
             self, "UpdateModelApprovalStatus",
@@ -84,6 +122,11 @@ class NightlyRetrainStack(Stack):
         definition_str = definition_str.replace("{{account}}", self.account)
         definition_str = definition_str.replace("{{region}}", self.region)
         definition_str = definition_str.replace("{{SageMakerRoleArn}}", step_functions_role.role_arn)
+        definition_str = definition_str.replace("{{ModelDriftSNSTopicArn}}", model_drift_topic.topic_arn)
+        definition_str = definition_str.replace(
+            "{{SubmitModelForReviewFunctionArn}}", 
+            submit_model_for_review_lambda.function_arn
+        )
         
         # Create the Step Functions state machine
         state_machine = sfn.CfnStateMachine(
@@ -94,7 +137,7 @@ class NightlyRetrainStack(Stack):
         )
         
         # Create EventBridge rule to trigger the workflow at 01:00 UTC
-        rule = events.Rule(
+        nightly_rule = events.Rule(
             self, "NightlyRetrainRule",
             rule_name="MESTraderNightlyRetrainTrigger",
             schedule=events.Schedule.cron(
@@ -108,12 +151,59 @@ class NightlyRetrainStack(Stack):
         )
         
         # Add Step Functions state machine as target
-        rule.add_target(
+        nightly_rule.add_target(
             targets.SfnStateMachine(
                 sfn.StateMachine.from_state_machine_arn(
                     self, "ImportedStateMachine",
                     state_machine_arn=state_machine.attr_arn
                 )
+            )
+        )
+        
+        # Create EventBridge rule to monitor model performance metrics every 4 hours
+        drift_monitor_rule = events.Rule(
+            self, "DriftMonitorRule",
+            rule_name="MESTraderDriftMonitorTrigger",
+            schedule=events.Schedule.cron(
+                minute="0",
+                hour="*/4",  # Every 4 hours
+                month="*",
+                week_day="*",
+                year="*"
+            ),
+            description="Monitors model metrics for drift every 4 hours"
+        )
+        
+        # Create Lambda function for drift monitoring
+        drift_monitor_lambda = lambda_.Function(
+            self, "DriftMonitorLambda",
+            function_name="ModelDriftMonitor",
+            runtime=lambda_.Runtime.PYTHON_3_9,
+            code=lambda_.Code.from_asset("mes_ai_trader/utils"),
+            handler="model_monitor.check_model_drift",
+            timeout=Duration.minutes(5),
+            environment={
+                "MODEL_PACKAGE_GROUP_NAME": "MESTraderModelPackageGroup",
+                "NOTIFICATION_TOPIC_ARN": model_drift_topic.topic_arn,
+                "DRIFT_THRESHOLD": "0.1"  # 10% threshold for drift
+            }
+        )
+        
+        # Add drift monitor Lambda as target
+        drift_monitor_rule.add_target(
+            targets.LambdaFunction(drift_monitor_lambda)
+        )
+        
+        # Grant permissions to the drift monitor Lambda
+        drift_monitor_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "sagemaker:DescribeModelPackage",
+                    "cloudwatch:GetMetricData",
+                    "s3:GetObject",
+                    "sns:Publish"
+                ],
+                resources=["*"]
             )
         )
         
@@ -132,9 +222,21 @@ class NightlyRetrainStack(Stack):
             description="ARN of the nightly retraining Step Functions workflow"
         )
         
-        # Output the EventBridge rule ARN
+        # Output the EventBridge rule ARNs
         CfnOutput(
-            self, "EventBridgeRuleArn",
-            value=rule.rule_arn,
+            self, "NightlyRetrainRuleArn",
+            value=nightly_rule.rule_arn,
             description="ARN of the EventBridge rule that triggers the nightly retraining"
+        )
+        
+        CfnOutput(
+            self, "DriftMonitorRuleArn",
+            value=drift_monitor_rule.rule_arn,
+            description="ARN of the EventBridge rule that monitors for model drift"
+        )
+        
+        CfnOutput(
+            self, "ModelDriftTopicArn",
+            value=model_drift_topic.topic_arn,
+            description="ARN of the SNS topic for model drift alerts"
         ) 
